@@ -7,7 +7,7 @@ needs from Alpaca, so it keeps no state of its own:
     the first fill at $355.99).
   * Trailing floor: once the price is >= 10% above the average entry price,
     the fixed floor is replaced by a 5% trailing stop (only ever moves up).
-  * Ladder: the -20% / -30% limit buys are standing GTC orders with their own
+  * Ladder: the -15% / -22% / -29% limit buys (10 / 15 / 20 shares) are standing GTC orders with their own
     floor stops attached; this script only checks that they are still there.
   * If the position is gone (floor or trailing stop hit), leftover TSLA buy
     orders are cancelled so the ladder never re-buys a closed position.
@@ -26,7 +26,7 @@ SYMBOL = "TSLA"
 FLOOR_PRICE = 231.39  # -35% from the first fill at $355.99
 TRAIL_TRIGGER = 0.10  # switch to the trailing stop at +10% over avg entry
 TRAIL_PERCENT = 5  # trailing stop distance
-LADDER = [(284.79, 20), (249.19, 10)]  # (limit price, qty)
+LADDER = [(302.59, 10), (277.67, 15), (252.75, 20)]  # (limit price, qty): -15%, -22%, -29%
 
 DRY_RUN = "--dry-run" in sys.argv
 
@@ -115,9 +115,19 @@ def main():
     else:
         print("Protection OK, no change.")
 
-    open_ladder = {(round(float(o["limit_price"]), 2), int(float(o["qty"]))) for o in buys if o.get("limit_price")}
+    def key(o):
+        return (round(float(o["limit_price"]), 2), int(float(o["qty"])))
+    open_ladder = {key(o) for o in buys if o.get("limit_price")}
+    closed = api("GET", f"/v2/orders?status=closed&symbols={SYMBOL}&side=buy&limit=500")
+    filled = {key(o): o for o in closed if o.get("limit_price") and o["status"] == "filled"}
     for step in LADDER:
-        print(f"ladder {step[1]} @ {step[0]}: {'open' if step in open_ladder else 'not open (filled or cancelled)'}")
+        if step in open_ladder:
+            state = "open"
+        elif step in filled:
+            state = f"FILLED @ {filled[step]['filled_avg_price']} on {filled[step]['filled_at'][:10]}"
+        else:
+            state = "MISSING (cancelled?)"
+        print(f"ladder {step[1]} @ {step[0]}: {state}")
 
 
 if __name__ == "__main__":
