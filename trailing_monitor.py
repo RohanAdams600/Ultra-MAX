@@ -78,8 +78,12 @@ def main():
     price = api("GET", f"/v2/stocks/{SYMBOL}/trades/latest", base="https://data.alpaca.markets")["trade"]["p"]
     pos = api("GET", f"/v2/positions/{SYMBOL}")
     orders = [o for o in api("GET", f"/v2/orders?status=open&nested=false&symbols={SYMBOL}&limit=500")]
-    qty = int(float(pos["qty"])) if pos else 0
-    print(f"market_open={clock['is_open']} price={price} position={qty}")
+    from wheel import wheel_state  # wheel shares back covered calls; never stop them out
+    wheel = wheel_state()
+    held = int(float(pos["qty"])) if pos else 0
+    reserved = wheel["shares"]
+    qty = max(held - reserved, 0)
+    print(f"market_open={clock['is_open']} price={price} position={held} wheel_shares={reserved} managed={qty}")
 
     buys = [o for o in orders if o["side"] == "buy"]
     # "held" stops are OTO legs waiting on an unfilled ladder buy; they are not live yet.
@@ -93,6 +97,8 @@ def main():
         return
 
     avg = float(pos["avg_entry_price"])
+    if reserved:  # take the wheel's assigned shares out of Alpaca's blended average
+        avg = (avg * held - wheel["assign_price"] * reserved) / qty
     trail_on = any(o["type"] == "trailing_stop" for o in live_sells)
     want_trail = trail_on or price >= avg * (1 + TRAIL_TRIGGER)
     covered = sum(int(float(o["qty"])) for o in live_sells)

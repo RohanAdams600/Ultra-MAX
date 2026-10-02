@@ -1,8 +1,17 @@
 # TSLA strategy (Alpaca paper account)
 
-Everything here is live on the paper account and enforced by Alpaca orders plus
-`trailing_monitor.py`, which a Routine runs every weekday at 9:45, 10:45, 11:45,
-12:45, 1:45, 2:45 and 3:45 PM ET.
+Two strategies run side by side on TSLA: a **trailing-stop + ladder** position
+(`trailing_monitor.py`) and the **wheel** (`wheel.py`).
+
+## Schedule
+
+- A Routine fires every weekday at :40 past each hour, 9:40 AM to 3:40 PM ET,
+  and starts `run_quarter_hours.sh`. That runs both scripts immediately and every
+  15 minutes after (Routines can't fire more often than once an hour).
+- A second Routine posts a daily summary at 4:05 PM ET (read-only).
+- Both scripts do nothing while the market is closed (nights, weekends, holidays).
+
+# Part 1: trailing stop + ladder
 
 ## Entry
 
@@ -61,3 +70,40 @@ Why this shape:
 - Re-entry after a stop-out: no rule, so the monitor buys nothing back.
 - Take-profit target: none; upside is left to the trailing stop.
 - Rungs are one-shot; a filled rung is not re-armed if the price recovers.
+
+# Part 2: the wheel
+
+One contract (100 shares) at a time.
+
+## Stage 1: cash-secured puts
+- Sell 1 put with the strike nearest **10% below** the current price, on the
+  expiration closest to **21 days** out (allowed range 14–28 days).
+- Limit price is the bid/ask midpoint; if it hasn't filled after 10 minutes it is
+  cancelled and re-priced on the next run.
+- **Only if free cash covers assignment:** cash minus open stock buy orders
+  (the ladder) minus other short-put collateral must be ≥ strike × 100, and
+  Alpaca's options buying power must agree.
+- Expires worthless → sell the next put. Assigned → stage 2.
+
+## Stage 2: covered calls
+- **Cost basis** = assignment price − every premium collected this cycle
+  (net of buybacks), per share.
+- Sell 1 call with the strike nearest **10% above the cost basis**, same
+  expiration rules. **Never below the cost basis.**
+- Expires worthless → sell the next call. Called away → back to stage 1 and a
+  new cycle starts.
+
+## Both stages
+- **50% take-profit:** while an option is open, a buy-to-close limit at 50% of
+  the premium received sits on the book each day; once it fills, the next run
+  sells a new option. On expiration day the option is left to expire.
+- **No saved state file:** stage, premium and cost basis are rebuilt each run
+  from Alpaca's account activity (option fills, assignments, expirations since
+  2026-10-02).
+- **Kept apart from Part 1:** wheel shares are excluded from the trailing
+  floor/stop, so a stop can never sell shares backing a covered call.
+
+## Daily summary (4:05 PM ET)
+Stage, premium collected (total and this cycle), open option, wheel shares and
+cost basis, wheel total return (premium + share P/L − cost to close the open
+option, also as % of the first put's collateral), and account equity return.
