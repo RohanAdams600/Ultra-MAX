@@ -66,6 +66,15 @@ def api(method, path, body=None, base=None):
         raise RuntimeError(f"{method} {path} -> {e.code} {e.read().decode()}")
 
 
+def wheel_shares():
+    """(shares, price paid) held by the wheel strategy."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wheel", "state.json")
+    if not os.path.exists(path):
+        return 0, 0.0
+    w = json.load(open(path))
+    return int(w.get("shares", 0)), float(w.get("paid_per_share") or 0)
+
+
 def act(desc, method, path, body=None):
     print(("[dry-run] " if DRY_RUN else "") + desc)
     if not DRY_RUN:
@@ -79,7 +88,10 @@ def main():
     pos = api("GET", f"/v2/positions/{SYMBOL}")
     orders = [o for o in api("GET", f"/v2/orders?status=open&nested=false&symbols={SYMBOL}&limit=500")]
     qty = int(float(pos["qty"])) if pos else 0
-    print(f"market_open={clock['is_open']} price={price} position={qty}")
+    # Shares owned by the wheel strategy (wheel/state.json) back its covered calls; leave them alone.
+    total, (wheel, wheel_paid) = qty, wheel_shares()
+    qty = max(0, qty - wheel)
+    print(f"market_open={clock['is_open']} price={price} position={qty} (excluding {wheel} wheel shares)")
 
     buys = [o for o in orders if o["side"] == "buy"]
     # "held" stops are OTO legs waiting on an unfilled ladder buy; they are not live yet.
@@ -93,6 +105,8 @@ def main():
         return
 
     avg = float(pos["avg_entry_price"])
+    if wheel:  # Alpaca blends all TSLA shares; take the wheel's shares back out
+        avg = (avg * total - wheel_paid * wheel) / qty
     trail_on = any(o["type"] == "trailing_stop" for o in live_sells)
     want_trail = trail_on or price >= avg * (1 + TRAIL_TRIGGER)
     covered = sum(int(float(o["qty"])) for o in live_sells)
